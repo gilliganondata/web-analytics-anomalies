@@ -1,0 +1,291 @@
+---
+title: "Anomaly Counts by Segment List #1 and Segment List #2"
+output: 
+  ioslides_presentation:
+    widescreen: true
+    smaller: true
+    fig_width: 10
+    fig_height: 3.5
+    css: styles.css
+    logo: images/logo.png
+
+---
+
+```{r setup, include=FALSE}
+
+# PLATFORM: Adobe Analytics
+#
+# The purpose of this script is to answer the question, "Did any of my metrics move ENOUGH" for
+# any of two sets of segments in the most recent time period to look like they are not likely 
+# just fluctuatingt due to noise. It does this by using the 35 days *prior* to the period being
+# assessed to build a forecast for the assessment period. This uses exponential smoothing / 
+# Holt-Winters for the forecast, and it predicts a specific value as well as a 95% confidence 
+# interval (an "upper" and a "lower" limit around the forecast value). The script relies on Adobe 
+# to do this work (but it could also be done in R). The script then looks at the *actual* values 
+# and flags any of them that fall OUTSIDE the confidence interval.
+#
+# This differs from the way that Adobe Analytics presents anomaly detection in a couple of ways:
+#
+# 1) It focuses JUST on the most recent period, even though it plots a longer trendline. It ignores
+#     anomalies that occurred in the past, because it's focused on "did anything happen LATELY?"
+# 2) It shows a trendline that includes the previous period data -- data that is used to create
+#     the forecast (and even earlier, if desired)
+#
+# This script takes as inputs:
+#  - a set of metrics
+#  - a single segment or list of segments that should be applied for the entire report.
+#  - two lists of segments that are then drilled down into
+#
+# To use this script, you will need an .Renviron file in your working directory when you start/
+# re-start R that has your Adobe Analytics credentials and the RSID for the report suite being 
+# used. It should look like:
+#
+# ADOBE_KEY="[Your Adobe Key]"
+# ADOBE_SECRET="[Your Adobe Secret]"
+# RSID="[The RSID for the report suite being used]"
+#
+# Then, you will need to customize the various settings in the config.R file.
+# What these settings are for and how to adjust them is documented in the comments of that file.
+
+knitr::opts_chunk$set(echo = TRUE)
+
+# Get a timestamp for when the script starts running. Ultimately, this will be written
+# out to a file with end time so there is a record of how long it took the script to run.
+script_start_time <- Sys.time()
+
+# Load libraries
+library(RSiteCatalyst)
+library(tidyverse)
+library(scales)              # For getting commas in numbers on y-axes
+library(stringr)             # For wrapping strings in the axis labels
+
+```
+
+```{r settings, include=FALSE}
+
+###############
+# Settings
+###############
+# These are all sourced from config.R, so be sure to open that script
+# and adjust settings there before running this one. These are called out
+# as separate chunks just for code readability (hopefully).
+
+knitr::read_chunk('config.R')
+
+```
+
+```{r metrics-list, include=FALSE}
+```
+
+```{r timeframes, include=FALSE}
+```
+
+```{r main-segment, include=FALSE}
+```
+
+```{r drilldown-segments, include=FALSE}
+```
+
+```{r default-theme, include=FALSE}
+```
+
+```{r functions, include=FALSE}
+###############
+# Functions
+
+####################
+# Heatmap Creation Function
+####################
+
+summary_heatmap <- function(metric){
+  
+# Get just the results for the metric of interest
+summary_table <- filter(segment_results_anomalies, metric_name == metric) %>%
+  select(segment_1, segment_2, metric_good_anomalies, metric_bad_anomalies, metric_net_good_anomalies)
+
+# Convert the segment names to factors (required in order to order them) and
+# ensure they're ordered the same as set up in the config.
+summary_table$segment_1 <- factor(summary_table$segment_1, 
+                                  levels = rev(sapply(segment_drilldown_1, function(x) x$name)))
+
+summary_table$segment_2 <- factor(summary_table$segment_2, 
+                                  levels = sapply(segment_drilldown_2, function(x) x$name))
+
+# Create the heatmap
+
+# Get the details on how to format the metric in the box
+metric_format <- filter(metrics_list, metric_name == metric) %>% 
+  select(metric_format) %>% as.character()
+
+metric_decimals <- filter(metrics_list, metric_name == metric) %>% 
+  select(metric_decimals) %>% as.numeric()
+
+heatmap_plot <- ggplot(summary_table, aes(segment_2, segment_1)) + 
+  geom_tile(aes(fill = metric_net_good_anomalies)) + 
+  scale_fill_gradient2(low = "red", mid = "white", high = "green", limits=c(-5,5)) +
+  geom_text(aes(label = paste0("+",metric_good_anomalies)), nudge_y = 0.2) +
+  geom_text(aes(label = paste0("-",metric_bad_anomalies)), nudge_y = -0.2) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 10)) +
+  scale_y_discrete(labels = function(x) str_wrap(x, width = 8)) +
+  default_theme +
+  theme(axis.text = element_text(size = 12, colour = "grey10"),
+        panel.grid.major = element_blank(),
+        legend.position = "none")
+  
+}
+
+# And, get one function that is shared with other .Rmd files.
+knitr::read_chunk('anomaly_check_functions.R')
+```
+
+```{r assess-anomalies, include=FALSE}
+```
+
+```{r main, include=FALSE}
+
+#######################
+# Start of main functionality
+#######################
+
+# Get the values needed to authenticate from the .Renviron file
+auth_key <- Sys.getenv("ADOBE_KEY")
+auth_secret <- Sys.getenv("ADOBE_SECRET")
+
+# Get the RSID we're going to use from the .Renviron file
+rsid <- Sys.getenv("RSID")
+
+# Authenticate
+SCAuth(auth_key, auth_secret)
+
+# Cycle through all possible combinations of the segments
+# in segment_drilldown_1 and segment_drilldown_2. Think of this as a matrix for each
+# metric that will show the total for each combination of segments from the two lists.
+# Should this be doable without loops? Maybe. With lapply? I don't think it would
+# change the number of API calls, and that's what the real performance drag is.
+
+segment_results_anomalies <- data.frame(segment_1 = character(),
+                              segment_2 = character(),
+                              metric_name = character(),
+                              metric_good_anomalies = numeric(),
+                              metric_bad_anomalies = numeric(),
+                              metric_net_good_anomalies = numeric(),
+                              stringsAsFactors = FALSE)
+
+# Initialize a counter for adding new rows to the data frame just created.
+new_row <- 1
+
+for(s1 in 1:length(segment_drilldown_1)){
+
+  # Get the current segment 1 to be processed
+  segment1_id <- segment_drilldown_1[[s1]]$seg_id
+  segment1_name <- segment_drilldown_1[[s1]]$name
+
+  for(s2 in 1:length(segment_drilldown_2)){
+
+    # Get the current segment 2 to be processed
+    segment2_id <- segment_drilldown_2[[s2]]$seg_id
+    segment2_name <- segment_drilldown_2[[s2]]$name
+
+    segments <- c(segments_all, segment1_id, segment2_id)
+
+    # Pull the totals for the two segments metrics to be assessed. This is
+    # a little bit of a hack, as it's really QueueSummary() data that we're
+    # looking for, but that doesn't support a segment. So, this is simply
+    # using "year" as the granularity to get summary-like data. This will
+    # potentially cause a hiccup here if the period spans two years.
+
+    # Get metrics to be assessed for the "anomaly period." This data will include
+    # the forecast values for the metrics, with that forecast based on the 35 days
+    # preceding the start date.
+    data_anomaly_trend <- QueueOvertime(rsid,
+                           date_start_anomaly_period,
+                           date_end,
+                           metrics_list$metric_id,
+                           date.granularity = "day",
+                           segment.id = segments,
+                           anomaly.detection = TRUE)
+
+    # Get the result for each metric
+    for(m in 1:nrow(metrics_list)){
+      metric_id <- metrics_list[m,1]
+      metric_name <- metrics_list[m,2]
+      
+      # Call the function that actually gets the anomaly counts
+      anomaly_count <- assess_anomalies(metric_id, data_anomaly_trend)
+
+      # Add the results to the data frame
+      segment_results_anomalies[new_row,] <- NA
+      segment_results_anomalies$segment_1[new_row] <- segment1_name
+      segment_results_anomalies$segment_2[new_row] <- segment2_name
+      segment_results_anomalies$metric_name[new_row] <- metric_name
+      segment_results_anomalies$metric_good_anomalies[new_row] <- anomaly_count$good_anomalies
+      segment_results_anomalies$metric_bad_anomalies[new_row] <- anomaly_count$bad_anomalies
+      segment_results_anomalies$metric_net_good_anomalies[new_row] <- anomaly_count$net_good_anomalies
+
+      # Increment the counter so the next iteration will add another row
+      new_row <- new_row + 1
+    }
+  }
+}
+
+# Save this data. This is just so we can comment out the actual pulling of the
+# data if we're just tinkering with the output
+save(segment_results_anomalies, file = "data_anomaly_id_two_dimension_drilldown.Rda")
+# load("data_anomaly_id_two_dimension_drilldown.Rda")
+
+# RMarkdown doesn't do great with looping for output, so the sections below need to be
+# constructed manually. This should be fairly quick to tweak. Note that summary_heatmap() takes
+# as an input the 'metric_name' value, so this needs to be based on what was entered
+# for 'metric_name' in the 'metrics_list' object in the Settings.
+
+```
+
+## Revenue
+
+This summary highlights the anomalies in overall key metrics by day for the most recent week by comparing a forecast of the results with the actual results to identify which days during the last week deviated a "significant" amount from the expected result. The top number is the number of positive anomalies, and the bottom number is the number of negative anomalies. The color indicates the number of _net positive_ (good - bad) anomalies. This assessment **`r ifelse(include_weekends=="No","excludes","includes")`** weekend anomalies.
+
+```{r revenue, echo=FALSE, warning=FALSE}
+heatmap_plot <- summary_heatmap("Revenue")
+heatmap_plot
+```
+
+## Orders
+
+This summary highlights the anomalies in overall key metrics by day for the most recent week by comparing a forecast of the results with the actual results to identify which days during the last week deviated a "significant" amount from the expected result. The top number is the number of positive anomalies, and the bottom number is the number of negative anomalies. The color indicates the number of _net positive_ (good - bad) anomalies. This assessment **`r ifelse(include_weekends=="No","excludes","includes")`** weekend anomalies.
+
+```{r orders, echo=FALSE, warning=FALSE}
+heatmap_plot <- summary_heatmap("Orders")
+heatmap_plot
+```
+
+## Visits
+
+This summary highlights the anomalies in overall key metrics by day for the most recent week by comparing a forecast of the results with the actual results to identify which days during the last week deviated a "significant" amount from the expected result. The top number is the number of positive anomalies, and the bottom number is the number of negative anomalies. The color indicates the number of _net positive_ (good - bad) anomalies. This assessment **`r ifelse(include_weekends=="No","excludes","includes")`** weekend anomalies.
+
+```{r visits, echo=FALSE, warning=FALSE}
+heatmap_plot <- summary_heatmap("Visits")
+heatmap_plot
+```
+
+## Conversion Rate
+
+This summary highlights the anomalies in overall key metrics by day for the most recent week by comparing a forecast of the results with the actual results to identify which days during the last week deviated a "significant" amount from the expected result. The top number is the number of positive anomalies, and the bottom number is the number of negative anomalies. The color indicates the number of _net positive_ (good - bad) anomalies. This assessment **`r ifelse(include_weekends=="No","excludes","includes")`** weekend anomalies.
+
+```{r cvr, echo=FALSE, warning=FALSE}
+heatmap_plot <- summary_heatmap("Conversion Rate")
+heatmap_plot
+```
+
+```{r script_time, include=FALSE}
+# Get a timestamp for when the script is essentially done and write the start and end times out
+# to a file that can be checked to see how long it took the script to run.
+
+script_end_time <- Sys.time()
+
+duration_message <- paste0("The script started running at ", script_start_time, " and finished running at ",
+                          script_end_time, ". The total duration for the script to run was: ",
+                          script_end_time - script_start_time," minutes.")
+
+write_file(duration_message, path = "script_duration_anomalies_two_dimension_drilldown.txt")
+
+```

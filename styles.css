@@ -1,0 +1,58 @@
+/* The heavy use of !important; is the only way I could get the */
+/* updates to come through. */
+
+/* Logo on Title Slide */
+.gdbar img {
+  width: 700px !important;
+  height: 112px !important;
+  margin: 8px 8px;
+}
+
+/* Logo Background on Title Slide */
+.gdbar {
+  width: 800px !important;
+  height: 130px !important;
+}
+
+/* Logo in Footer */
+slides > slide:not(.nobackground):before {
+  width: 175px;
+  height: 28px;
+  background-size: 175px 28px;
+}
+
+/* Make slide background white (no gradient at the bottom). */
+slides > slide.backdrop {
+  background: white !important;
+}
+
+/* Spacing above main body of slide -- defaults to 45px */
+slides > slide > hgroup + article {
+  margin-top: 0 !important;
+}
+
+/* Caption */
+
+.caption {
+  color: red;
+}
+
+h1, h2 {
+  font-family: Helvetica,sans-serif !important;
+  color: #000000;
+  font-size: 1.6em;
+	font-style: normal;
+	font-variant: normal;
+}
+
+p {
+  font-family: Helvetica,sans-serif !important;
+  color: #111111;
+  font-size: 1em;
+	font-style: normal;
+	font-variant: normal;
+}
+
+.title-slide hgroup h1 {
+  font-size: 25px;
+}

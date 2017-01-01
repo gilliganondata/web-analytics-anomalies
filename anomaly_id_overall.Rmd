@@ -1,0 +1,213 @@
+---
+title: "Anomaly Detection in Recent Results for Key Metrics"
+output: 
+  ioslides_presentation:
+    widescreen: true
+    smaller: true
+    fig_width: 10
+    fig_height: 3.5
+    css: styles.css
+    logo: images/logo.png
+
+---
+
+```{r setup, include=FALSE}
+
+# PLATFORM: Adobe Analytics
+#
+# The purpose of this script is to answer the question, "Did any of my metrics move ENOUGH" in the
+# most recent time period to look like they are not likely just fluctuatingt due to noise. It
+# does this by using the 35 days *prior* to the period being assessed to build a forecast for the
+# assessment period. This uses exponential smoothing / Holt-Winters for the forecast, and it predicts
+# a specific value as well as a 95% confidence interval (an "upper" and a "lower" limit around
+# the forecast value). The script relies on Adobe to do this work (but it could also be done
+# in R). The script then looks at the *actual* values and flags any of them that fall OUTSIDE
+# the confidence interval.
+#
+# This differs from the way that Adobe Analytics presents anomaly detection in a couple of ways:
+#
+# 1) It focuses JUST on the most recent period, even though it plots a longer trendline. It ignores
+#     anomalies that occurred in the past, because it's focused on "did anything happen LATELY?"
+# 2) It shows a trendline that includes the previous period data -- data that is used to create
+#     the forecast (and even earlier, if desired)
+#
+# This script takes as inputs a set of metrics and a single segment or list of segments that should
+# be applied for the entire report.
+#
+# To use this script, you will need an .Renviron file in your working directory when you start/
+# re-start R that has your Adobe Analytics credentials and the RSID for the report suite being 
+# used. It should look like:
+#
+# ADOBE_KEY="[Your Adobe Key]"
+# ADOBE_SECRET="[Your Adobe Secret]"
+# RSID="[The RSID for the report suite being used]"
+#
+# Then, you will need to customize the various settings in the config.R file.
+# What these settings are for and how to adjust them is documented in the comments of that file.
+
+knitr::opts_chunk$set(echo = TRUE)
+
+# Get a timestamp for when the script starts running. Ultimately, this will be written
+# out to a file with end time so there is a record of how long it took the script to run.
+script_start_time <- Sys.time()
+
+# Load libraries
+library(RSiteCatalyst)
+library(tidyverse)
+library(scales)              # For getting commas in numbers on y-axes
+
+```
+
+```{r settings, include=FALSE}
+
+###############
+# Settings
+###############
+# These are all sourced from config.R, so be sure to open that script
+# and adjust settings there before running this one. These are called out
+# as separate chunks just for code readability (hopefully).
+
+knitr::read_chunk('config.R')
+
+```
+
+```{r metrics-list, include=FALSE}
+```
+
+```{r timeframes, include=FALSE}
+```
+
+```{r main-segment, include=FALSE}
+```
+
+```{r default-theme, include=FALSE}
+```
+
+```{r functions, include=FALSE}
+###############
+# Functions
+# These are all sourced from anomaly_check_functions.R.
+
+knitr::read_chunk('anomaly_check_functions.R')
+```
+
+```{r assess-anomalies, include=FALSE}
+```
+
+```{r plot-with-anomalies, include=FALSE}
+```
+
+```{r main, include=FALSE}
+
+#######################
+# Start of main functionality
+#######################
+
+# Get the values needed to authenticate from the .Renviron file
+auth_key <- Sys.getenv("ADOBE_KEY")
+auth_secret <- Sys.getenv("ADOBE_SECRET")
+
+# Get the RSID we're going to use from the .Renviron file
+rsid <- Sys.getenv("RSID")
+
+# Authenticate
+SCAuth(auth_key, auth_secret)
+
+# Get metrics to be assessed for the "anomaly period." This data will include
+# the forecast values for the metrics, with that forecast based on the 35 days
+# preceding the start date.
+data_anomaly_trend <- QueueOvertime(rsid,
+                           date_start_anomaly_period,
+                           date_end,
+                           metrics_list$metric_id,
+                           date.granularity = "day",
+                           segment.id = segments_all,
+                           anomaly.detection = TRUE)
+
+# Get metrics by day for the "actuals only" period that will be included in the
+# plot leading up to the anomaly period.
+date_end_actuals_only <- as.character(as.Date(date_start_anomaly_period) - 1)
+
+data_long_trend <- QueueOvertime(rsid,
+                           date_start_long_trend,
+                           date_end_actuals_only,
+                           metrics_list$metric_id,
+                           date.granularity = "day",
+                           segment.id = segments_all,
+                           anomaly.detection = FALSE)
+
+```
+
+## Revenue
+
+This summary highlights the anomalies in overall key metrics by day for the most recent week by comparing a forecast of the results with the actual results to identify which days during the last week deviated a "significant" amount from the expected result. This assessment **`r ifelse(include_weekends=="No","excludes","includes")`** weekend anomalies.
+
+```{r revenue, echo=FALSE, warning=FALSE}
+get_assessment <- build_plot("revenue", data_long_trend, data_anomaly_trend)
+```
+
+Good Anomalies: **`r get_assessment$good_anomalies`**<br>
+Bad Anomalies: **`r get_assessment$bad_anomalies`**
+
+```{r revenue chart, echo=FALSE, warning=FALSE}
+get_assessment$plot
+```
+
+## Orders
+
+This summary highlights the anomalies in overall key metrics by day for the most recent week by comparing a forecast of the results with the actual results to identify which days during the last week deviated a "significant" amount from the expected result. This assessment **`r ifelse(include_weekends=="No","excludes","includes")`** weekend anomalies.
+
+```{r orders, echo=FALSE, warning=FALSE}
+get_assessment <- build_plot("orders", data_long_trend, data_anomaly_trend)
+```
+
+Good Anomalies: **`r get_assessment$good_anomalies`**<br>
+Bad Anomalies: **`r get_assessment$bad_anomalies`**
+
+```{r orders chart, echo=FALSE, warning=FALSE}
+get_assessment$plot
+```
+
+## Visits
+
+This summary highlights the anomalies in overall key metrics by day for the most recent week by comparing a forecast of the results with the actual results to identify which days during the last week deviated a "significant" amount from the expected result. This assessment **`r ifelse(include_weekends=="No","excludes","includes")`** weekend anomalies.
+
+```{r visits, echo=FALSE, warning=FALSE}
+get_assessment <- build_plot("visits", data_long_trend, data_anomaly_trend)
+```
+
+Good Anomalies: **`r get_assessment$good_anomalies`**<br>
+Bad Anomalies: **`r get_assessment$bad_anomalies`**
+
+```{r visits chart, echo=FALSE, warning=FALSE}
+get_assessment$plot
+```
+
+## Conversion Rate
+
+This summary highlights the anomalies in overall key metrics by day for the most recent week by comparing a forecast of the results with the actual results to identify which days during the last week deviated a "significant" amount from the expected result. This assessment **`r ifelse(include_weekends=="No","excludes","includes")`** weekend anomalies.
+
+```{r conversion rate, echo=FALSE, warning=FALSE}
+get_assessment <- build_plot("cm300000270_557f63ffe4b0d23197c9e852", data_long_trend, data_anomaly_trend)
+```
+
+Good Anomalies: **`r get_assessment$good_anomalies`**<br>
+Bad Anomalies: **`r get_assessment$bad_anomalies`**
+
+```{r conversion rate chart, echo=FALSE, warning=FALSE}
+get_assessment$plot
+```
+
+```{r script_time, include=FALSE}
+# Get a timestamp for when the script is essentially done and write the start and end times out
+# to a file that can be checked to see how long it took the script to run.
+
+script_end_time <- Sys.time()
+
+duration_message <- paste0("The script started running at ", script_start_time, " and finished running at ",
+                          script_end_time, ". The total duration for the script to run was: ",
+                          script_end_time - script_start_time," minutes.")
+
+write_file(duration_message, path = "script_duration_anomalies_main.txt")
+
+```

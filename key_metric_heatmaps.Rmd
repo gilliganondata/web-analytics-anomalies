@@ -1,0 +1,277 @@
+---
+title: "Key Metrics by Segment List #1 and Segment List #2"
+output: 
+  ioslides_presentation:
+    widescreen: true
+    smaller: true
+    fig_width: 10
+    css: styles.css
+    logo: images/logo.png
+
+---
+
+```{r setup, include=FALSE}
+
+# PLATFORM: Adobe Analytics
+# This script takes as inputs a set of metrics and then two lists of Adobe Analytics segment IDs.
+# It then makes a heatmap for each metric that looks at the "intersection" of each segment in those
+# two lists (one list is the rows in the heatmap and the other is the columns in the heatmap.)
+#
+# To use this script, you will need an .Renviron file in your working directory when you start/
+# re-start R that has your Adobe Analytics credentials and the RSID for the report suite being 
+# used. It should look like:
+#
+# ADOBE_KEY="[Your Adobe Key]"
+# ADOBE_SECRET="[Your Adobe Secret]"
+# RSID="[The RSID for the report suite being used]"
+#
+# Then, you will need to customize the various settings in the "Settings" section below.
+# What these settings are for and how to adjust them is documented in the comments.
+
+knitr::opts_chunk$set(echo = FALSE)
+
+# Get a timestamp for when the script starts running. Ultimately, this will be written
+# out to a file with end time so there is a record of how long it took the script to run.
+script_start_time <- Sys.time()
+
+################
+# Load libraries
+################
+
+library(tidyverse)
+library(RSiteCatalyst)
+library(scales)   # For adding commas in values
+library(stringr)  # For wrapping strings in the axis labels
+
+################
+# Settings
+################
+
+# These are all sourced from config.R, so be sure to open that script
+# and adjust settings there before running this one. These are called out
+# as separate chunks just for code readability (hopefully).
+
+```
+
+```{r cache=FALSE}
+knitr::read_chunk('config.R')
+```
+
+```{r metrics-list}
+```
+
+```{r timeframes}
+```
+
+```{r main-segment}
+```
+
+```{r drilldown-segments}
+```
+
+```{r default-theme}
+```
+
+```{r main, include=FALSE}
+
+################
+# Authentication
+################
+
+# Get the values needed to authenticate from the .Renviron file
+auth_key <- Sys.getenv("ADOBE_KEY")
+auth_secret <- Sys.getenv("ADOBE_SECRET")
+
+# Get the RSID we're going to use
+rsid <- Sys.getenv("RSID")
+
+####################
+# Heatmap Creation Function
+####################
+
+summary_heatmap <- function(metric){
+  
+# Get just the results for the metric of interest
+summary_table <- filter(segment_results, metric_name == metric) %>%
+  select(segment_1, segment_2, metric_total)
+
+# Convert the segment names to factors (required in order to order them) and
+# ensure they're ordered the same as set up in the config.
+summary_table$segment_1 <- factor(summary_table$segment_1, 
+                                  levels = rev(sapply(segment_drilldown_1, function(x) x$name)))
+
+summary_table$segment_2 <- factor(summary_table$segment_2, 
+                                  levels = sapply(segment_drilldown_2, function(x) x$name))
+
+# Need to jump through a few hoops to get the x-axis labels up at the top
+segment_2_levels <- as.data.frame(levels(summary_table$segment_2))
+
+# Create the heatmap
+
+# Get the details on how to format the metric in the box
+metric_format <- filter(metrics_list, metric_name == metric) %>% 
+  select(metric_format) %>% as.character()
+
+metric_decimals <- filter(metrics_list, metric_name == metric) %>% 
+  select(metric_decimals) %>% as.numeric()
+
+# Figure out what will become before and after the actual number based on the format.
+# By default, there is no symbol before or after.
+pre_num <- ""
+post_num <- ""
+
+if(metric_format == "dollar"){
+  pre_num <- "$"
+  } 
+
+if(metric_format == "percent"){
+  post_num <- "%"
+} 
+
+heatmap_plot <- ggplot(summary_table, aes(segment_2, segment_1)) + 
+  geom_tile(aes(fill = metric_total)) + 
+  scale_fill_gradient(low = "white", high = "green") +
+  geom_text(aes(label = 
+                  paste0(pre_num,
+                         comma(round(metric_total,metric_decimals)),
+                         post_num))) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 10)) +
+  scale_y_discrete(labels = function(x) str_wrap(x, width = 8)) +
+  default_theme +
+  theme(axis.text = element_text(size = 12, colour = "grey10"),
+        panel.grid.major = element_blank(),
+        legend.position = "none")
+  
+}
+
+################
+# Get and process the data
+################
+
+# Authenticate
+SCAuth(auth_key, auth_secret)
+
+# Cycle through all possible combinations of the segments
+# in segment_drilldown_1 and segment_drilldown_2. Think of this as a matrix for each
+# metric that will show the total for each combination of segments from the two lists. 
+# Should this be doable without loops? Maybe. With lapply? I don't think it would
+# change the number of API calls, and that's what the real performance drag is.
+
+segment_results <- data.frame(segment_1 = character(),
+                              segment_2 = character(),
+                              metric_name = character(),
+                              metric_total = numeric(),
+                              stringsAsFactors = FALSE)
+
+# Initialize a counter for adding new rows to the data frame just created.
+new_row <- 1
+
+# Loops are bad, but, boy, do they seem easier to follow here. And, I think,
+# don't impact the number of API calls to Adobe, so really shouldn't materially
+# impact performance.
+
+for(s1 in 1:length(segment_drilldown_1)){
+
+  # Get the current segment 1 to be processed
+  segment1_id <- segment_drilldown_1[[s1]]$seg_id
+  segment1_name <- segment_drilldown_1[[s1]]$name
+
+  for(s2 in 1:length(segment_drilldown_2)){
+
+    # Get the current segment 2 to be processed
+    segment2_id <- segment_drilldown_2[[s2]]$seg_id
+    segment2_name <- segment_drilldown_2[[s2]]$name
+
+    segments <- c(segments_all, segment1_id, segment2_id)
+
+    # Pull the totals for the two segments metrics to be assessed. This is
+    # a little bit of a hack, as it's really QueueSummary() data that we're
+    # looking for, but that doesn't support a segment. So, this is simply
+    # using "year" as the granularity to get summary-like data. This will
+    # potentially cause a hiccup here if the period spans two years.
+    data_summary <- QueueOvertime(rsid,
+                                           date_start_heatmap,
+                                           date_end,
+                                           metrics_list$metric_id,
+                                           date.granularity = "year",
+                                           segment.id = segments)
+
+    # Get the result for each metric
+    for(m in 1:nrow(metrics_list)){
+      metric_id <- metrics_list[m,1]
+      metric_name <- metrics_list[m,2]
+
+      # Add the results to the data frame
+      segment_results[new_row,] <- NA
+      segment_results$segment_1[new_row] <- segment1_name
+      segment_results$segment_2[new_row] <- segment2_name
+      segment_results$metric_name[new_row] <- metric_name
+      segment_results$metric_total[new_row] <- data_summary[1, colnames(data_summary) == metric_id]
+
+      # Increment the counter so the next iteration will add another row
+      new_row <- new_row + 1
+    }
+  }
+}
+
+# Save this data. This is just so we can comment out the actual pulling of the
+# data if we're just tinkering with the output
+save(segment_results, file = "data_key_metric_heatmaps.Rda")
+# load("data_key_metric_heatmaps.Rda")
+
+# RMarkdown doesn't do great with looping for output, so the sections below need to be
+# constructed manually. This should be fairly quick to tweak. Note that summary_heatmap() takes
+# as an input the 'metric_name' value, so this needs to be based on what was entered
+# for 'metric_name' in the 'metrics_list' object in the Settings.
+
+```
+
+## Revenue
+
+*Date Range: `r format(as.Date(date_start_heatmap), "%B %d, %Y")` to `r format(as.Date(date_end), "%B %d, %Y")`*
+
+```{r revenue seg-channel}
+summary_plot <- summary_heatmap("Revenue")
+summary_plot
+```
+
+## Orders
+
+_Date Range: `r format(as.Date(date_start_heatmap), "%B %d, %Y")` to `r format(as.Date(date_end), "%B %d, %Y")`_
+
+```{r orders seg-channel}
+summary_plot <- summary_heatmap("Orders")
+summary_plot
+```
+
+## Visits
+
+_Date Range: `r format(as.Date(date_start_heatmap), "%B %d, %Y")` to `r format(as.Date(date_end), "%B %d, %Y")`_
+
+```{r visits seg-channel}
+summary_plot <- summary_heatmap("Visits")
+summary_plot
+```
+
+## Conversion Rate
+
+_Date Range: `r format(as.Date(date_start_heatmap), "%B %d, %Y")` to `r format(as.Date(date_end), "%B %d, %Y")`_
+
+```{r conversion-rate seg-channel}
+summary_plot <- summary_heatmap("Conversion Rate")
+summary_plot
+```
+
+```{r script_time, include=FALSE}
+# Get a timestamp for when the script is essentially done and write the start and end times out
+# to a file that can be checked to see how long it took the script to run.
+
+script_end_time <- Sys.time()
+
+duration_message <- paste0("The script started running at ", script_start_time, " and finished running at ",
+                          script_end_time, ". The total duration for the script to run was: ",
+                          script_end_time - script_start_time," minutes.")
+
+write_file(duration_message, path = "script_duration_heatmaps.txt")
+
+```
